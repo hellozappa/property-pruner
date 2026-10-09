@@ -1,0 +1,9 @@
+{
+  "id": "property-pruner",
+  "name": "Property Pruner",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Remove blank YAML frontmatter properties from individual notes or folders.",
+  "author": "Chris Zappa",
+  "isDesktopOnly": false
+}

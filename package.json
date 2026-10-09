@@ -1,0 +1,22 @@
+{
+  "name": "property-pruner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Remove blank YAML frontmatter properties from Obsidian notes.",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "npm test && npm run build"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
