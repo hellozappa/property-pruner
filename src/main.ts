@@ -126,9 +126,8 @@ class ConfirmPruneModal extends Modal {
     this.titleEl.setText('Remove blank properties?');
     const count = this.preview.files.reduce((sum, file) => sum + file.result.removed.length, 0);
     this.contentEl.createEl('p', { text: this.target instanceof TFolder
-      ? `Scan all ${this.preview.scanned} Markdown files in “${this.target.path || '/'}” and its subfolders. Remove ${count} properties from ${this.preview.files.length} files.`
-      : `Remove ${count} ${count === 1 ? 'property' : 'properties'} from “${this.target.path}”.` });
-    this.contentEl.createEl('p', { text: 'Only missing values and YAML nulls are removed. Empty strings, lists, and maps are kept.' });
+      ? `Scan all ${this.preview.scanned} Markdown files in “${this.target.path || '/'}”${this.target.children.some(child => child instanceof TFolder) ? ' and its subfolders' : ''}. Remove ${count} properties from ${this.preview.files.length} files?`
+      : `Remove ${count} ${count === 1 ? 'property' : 'properties'} from “${this.target.path}”?` });
     if (this.preview.skipped) this.contentEl.createEl('p', { text: `${this.preview.skipped} files could not be safely processed and will be skipped.` });
     new Setting(this.contentEl)
       .addButton(button => button.setButtonText('Cancel').onClick(() => this.close()))
