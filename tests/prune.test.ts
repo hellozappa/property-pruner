@@ -67,3 +67,11 @@ test('retains valid Unicode keys and is idempotent', () => {
 test('supports closing delimiter at EOF and trailing whitespace', () => {
   assert.equal(pruneFrontmatter('--- \nremove:\n---').content, '--- \n---');
 });
+
+test('rechecking removes only approved properties that still have null values', () => {
+  const source = note('filled: now filled\nremove: null\nnewBlank:\nkeep: false\n');
+  const result = pruneFrontmatter(source, new Set(['filled', 'remove']));
+  assert.deepEqual(result.removed, ['remove']);
+  assert.equal(result.content, note('filled: now filled\nnewBlank:\nkeep: false\n'));
+  assert.equal(pruneFrontmatter(source, new Set()).content, source);
+});

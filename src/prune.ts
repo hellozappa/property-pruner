@@ -9,8 +9,27 @@ export interface PruneResult {
   skipped?: string;
 }
 
+/** Read-back verification counts absent keys, including after other metadata edits. */
+export function frontmatterKeys(content: string): Set<string> | undefined {
+  const opening = /^(?:\uFEFF)?---[ \t]*\r?\n/.exec(content);
+  if (!opening) return new Set();
+  const rest = content.slice(opening[0].length);
+  const closing = /^---[ \t]*(?:\r?\n|$)/m.exec(rest);
+  if (!closing) return undefined;
+  const doc = parseDocument(rest.slice(0, closing.index));
+  if (doc.errors.length || doc.warnings.length) return undefined;
+  if (doc.contents === null) return new Set();
+  if (!isMap(doc.contents)) return undefined;
+  const keys = new Set<string>();
+  for (const pair of doc.contents.items) {
+    if (!isScalar(pair.key) || typeof pair.key.value !== 'string') return undefined;
+    keys.add(pair.key.value);
+  }
+  return keys;
+}
+
 /** Delete source ranges rather than serializing the remaining frontmatter. */
-export function pruneFrontmatter(content: string): PruneResult {
+export function pruneFrontmatter(content: string, allowedProperties?: ReadonlySet<string>): PruneResult {
   const unchanged = (skipped?: string): PruneResult => ({
     content, removed: [], yamlStart: 0, yamlEnd: 0, replacement: '', skipped,
   });
@@ -44,6 +63,7 @@ export function pruneFrontmatter(content: string): PruneResult {
     if (!isScalar(pair.key) || typeof pair.key.value !== 'string' || !pair.key.range) {
       return unchanged('Frontmatter contains a non-string or unsupported property key.');
     }
+    if (allowedProperties && !allowedProperties.has(pair.key.value)) continue;
     if (!(pair.value === null || (isScalar(pair.value) && pair.value.value === null))) continue;
     const start = source.lastIndexOf('\n', pair.key.range[0] - 1) + 1;
     if (!/^[ \t]*$/.test(source.slice(start, pair.key.range[0]))) {

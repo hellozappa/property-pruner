@@ -13,6 +13,9 @@ A confirmation dialog shows the number of properties and files before either act
 The plugin settings contain two independent switches, both enabled by default:
 **Confirm before pruning files** and **Confirm before pruning folders**.
 
+All actions work with notes open in Reading view. The plugin updates their files
+through Obsidian's vault API without switching them to editing mode.
+
 ## What is removed
 
 ```yaml
@@ -31,9 +34,12 @@ frontmatter delimiters remain even when all properties are removed.
 
 Malformed or duplicate-key YAML, anchors/aliases, flow-style root mappings,
 and unsupported keys are skipped and reported in the completion notice.
-Files changed after the preview are also skipped. Open notes are edited through
-Obsidian’s editor so unsaved content and undo history are preserved; other notes
-use atomic `Vault.process` updates. Folder operations are sequential; a failure
+Before applying changes, the plugin rechecks the latest text and removes only
+properties included in the preview that still have missing or null values.
+New properties and newly filled values are preserved. Open editing views are saved
+first to retain unsaved text. All notes use atomic `Vault.process` updates so the
+Properties widget cannot reject a frontmatter editor transaction. Completion counts
+are checked against the saved files. Folder operations are sequential; a failure
 in one file does not prevent processing the other files.
 
 ## Development

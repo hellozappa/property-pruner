@@ -2,7 +2,7 @@ import {
   App, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting,
   TAbstractFile, TFile, TFolder,
 } from 'obsidian';
-import { pruneFrontmatter, PruneResult } from './prune';
+import { frontmatterKeys, pruneFrontmatter, PruneResult } from './prune';
 
 interface PrunerSettings { confirmFiles: boolean; confirmFolders: boolean }
 export const DEFAULT_SETTINGS: PrunerSettings = { confirmFiles: true, confirmFolders: true };
@@ -86,26 +86,32 @@ export default class PropertyPruner extends Plugin {
         if (this.disposed) break;
         try {
           if (this.app.vault.getAbstractFileByPath(planned.file.path) !== planned.file) { skipped++; continue; }
+          // Recheck only the properties included in the approved preview. A save,
+          // metadata update, or sort must not prevent pruning unrelated nulls.
+          const approved = new Set(planned.result.removed);
+          const recheck = (current: string): PruneResult => current === planned.original
+            ? planned.result : pruneFrontmatter(current, approved);
+          let result: PruneResult | undefined;
           const view = this.sourceView(planned.file);
-          if (view) {
-            if (view.editor.getValue() !== planned.original) { skipped++; continue; }
-            // Editing only the YAML keeps the note body and editor undo history.
-            view.editor.replaceRange(planned.result.replacement,
-              view.editor.offsetToPos(planned.result.yamlStart), view.editor.offsetToPos(planned.result.yamlEnd));
-          } else {
-            let applied = false;
-            await this.app.vault.process(planned.file, current => {
-              if (current !== planned.original) return current;
-              applied = true;
-              return planned.result.content;
-            });
-            if (!applied) { skipped++; continue; }
-          }
+          // Properties widgets may reject CodeMirror edits inside frontmatter.
+          // Flush unsaved text first, then use the same atomic file API in all modes.
+          if (view) await view.save();
+          await this.app.vault.process(planned.file, current => {
+            result = recheck(current);
+            return result.content;
+          });
+          if (result?.skipped) { skipped++; continue; }
+          if (!result?.removed.length) continue;
+          const remaining = frontmatterKeys(await this.app.vault.read(planned.file));
+          if (!remaining) { skipped++; continue; }
+          const verified = result.removed.filter(key => !remaining.has(key));
+          if (verified.length !== result.removed.length) skipped++;
+          if (!verified.length) continue;
           changed++;
-          removed += planned.result.removed.length;
+          removed += verified.length;
         } catch { skipped++; }
       }
-      new Notice(`Property Pruner: removed ${removed} ${removed === 1 ? 'property' : 'properties'} from ${changed} ${changed === 1 ? 'file' : 'files'}.${skipped ? ` Skipped ${skipped} ${skipped === 1 ? 'file' : 'files'} (unsupported YAML, changed content, or read/write errors).` : ''}`, 8000);
+      new Notice(`Property Pruner: removed ${removed} ${removed === 1 ? 'property' : 'properties'} from ${changed} ${changed === 1 ? 'file' : 'files'}.${skipped ? ` Could not fully process ${skipped} ${skipped === 1 ? 'file' : 'files'} (unsupported YAML, unavailable files, read/write errors, or unverified removals).` : ''}`, 8000);
     } catch (error) {
       console.error('Property Pruner failed', error);
       new Notice('Property Pruner could not complete. See the developer console for details.');

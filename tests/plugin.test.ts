@@ -9,8 +9,9 @@ class TFolder { constructor(public path: string, public children: (TFile | TFold
 class MarkdownView {
   file: TFile;
   editor: any;
-  constructor(file: TFile, editor: any) { this.file = file; this.editor = editor; }
-  getMode() { return 'source'; }
+  constructor(file: TFile, editor: any, private mode: 'source' | 'preview' = 'source') { this.file = file; this.editor = editor; }
+  getMode() { return this.mode; }
+  async save(): Promise<void> { throw new Error('A source view needs an explicit save mock'); }
 }
 const notices: string[] = [];
 const modals: any[] = [];
@@ -101,7 +102,7 @@ test('recursive run prunes selected descendants only', async () => {
   assert.ok(contents.get(outside.path)?.includes('remove:'));
 });
 
-test('skips content changed while confirmation is open', async () => {
+test('preserves a property filled while confirmation is open', async () => {
   const file = new TFile('a.md');
   const { plugin, contents, writes } = setup([file]);
   plugin.confirm = async () => { contents.set(file.path, '---\nremove: now filled\n---\nNew body'); return true; };
@@ -110,21 +111,141 @@ test('skips content changed while confirmation is open', async () => {
   assert.ok(contents.get(file.path)?.includes('now filled'));
 });
 
-test('uses current editor buffer and preserves body through a bounded edit', async () => {
+test('folder run rechecks reordered metadata and preserves new properties and body edits', async () => {
+  const a = new TFile('chosen/a.md'), b = new TFile('chosen/b.md');
+  const { plugin, contents, writes } = setup([a, b]);
+  plugin.confirm = async () => {
+    contents.set(a.path, '---\nkeep: value\nid: generated\nremove:\nnewBlank:\n---\nEdited body\n');
+    return true;
+  };
+  await plugin.run(new TFolder('chosen', [a, b]));
+  assert.deepEqual(writes, [a.path, b.path]);
+  assert.equal(contents.get(a.path), '---\nkeep: value\nid: generated\nnewBlank:\n---\nEdited body\n');
+});
+
+test('folder run rechecks the latest open editor buffer after confirmation', async () => {
+  const a = new TFile('chosen/a.md'), b = new TFile('chosen/b.md');
+  const { plugin, contents, writes } = setup([a, b]);
+  let buffer = '---\nremove:\nkeep: value\n---\nBody\n';
+  let editorWrites = 0;
+  const editor = { getValue: () => buffer, offsetToPos: (offset: number) => offset, replaceRange: (text: string, from: number, to: number) => {
+    editorWrites++;
+    buffer = buffer.slice(0, from) + text + buffer.slice(to);
+  } };
+  const view = new MarkdownView(a, editor);
+  view.save = async () => { contents.set(a.path, buffer); };
+  plugin.app.workspace.getLeavesOfType = () => [{ view }];
+  plugin.confirm = async () => {
+    buffer = '---\nkeep: value\nremove:\nnewBlank:\n---\nEdited unsaved body\n';
+    return true;
+  };
+  await plugin.run(new TFolder('chosen', [a, b]));
+  assert.equal(editorWrites, 0);
+  assert.equal(contents.get(a.path), '---\nkeep: value\nnewBlank:\n---\nEdited unsaved body\n');
+  assert.deepEqual(writes, [a.path, b.path]);
+});
+
+test('skips malformed YAML introduced after confirmation without overwriting it', async () => {
   const file = new TFile('a.md');
-  const { plugin, writes } = setup([file]);
+  const { plugin, contents, writes } = setup([file]);
+  plugin.confirm = async () => { contents.set(file.path, '---\nremove:\nbroken: [\n---\nNew body'); return true; };
+  await plugin.run(file);
+  assert.equal(writes.length, 0);
+  assert.ok(contents.get(file.path)?.includes('broken: ['));
+});
+
+test('saves the current editor buffer before pruning and preserves unsaved body text', async () => {
+  const file = new TFile('a.md');
+  const { plugin, contents, writes } = setup([file]);
   let buffer = '---\nremove:\nkeep: unsaved\n---\nUnsaved body\n';
   let editorWrites = 0;
   const editor = { getValue: () => buffer, offsetToPos: (offset: number) => offset, replaceRange: (text: string, from: number, to: number) => {
     editorWrites++;
     buffer = buffer.slice(0, from) + text + buffer.slice(to);
   } };
-  plugin.app.workspace.getLeavesOfType = () => [{ view: new MarkdownView(file, editor) }];
+  const view = new MarkdownView(file, editor);
+  let saves = 0;
+  view.save = async () => { saves++; contents.set(file.path, buffer); };
+  plugin.app.workspace.getLeavesOfType = () => [{ view }];
   plugin.settings.confirmFiles = false;
   await plugin.run(file);
-  assert.equal(buffer, '---\nkeep: unsaved\n---\nUnsaved body\n');
-  assert.equal(editorWrites, 1);
-  assert.equal(writes.length, 0);
+  assert.equal(contents.get(file.path), '---\nkeep: unsaved\n---\nUnsaved body\n');
+  assert.equal(saves, 1);
+  assert.equal(editorWrites, 0);
+  assert.deepEqual(writes, [file.path]);
+});
+
+test('blocked editor transactions cannot prevent folder pruning or produce false success counts', async () => {
+  const source = '---\nkeep: value\n' + Array.from({ length: 15 }, (_, i) => `blank${i}:\n`).join('') + '---\nBody\n';
+  const files = ['Test 1', 'Test 2', 'Test 3'].map(name => new TFile(`chosen/${name}.md`));
+  const { plugin, contents, writes } = setup(files, source);
+  const views = files.map((file, i) => {
+    const editor = { getValue: () => source, offsetToPos: (offset: number) => offset, replaceRange() { /* actual Properties-widget transaction filter rejects this edit */ } };
+    const view = new MarkdownView(file, editor, i === 2 ? 'preview' : 'source');
+    view.save = async () => { contents.set(file.path, source); };
+    return view;
+  });
+  plugin.app.workspace.getLeavesOfType = () => views.map(view => ({ view }));
+  plugin.settings.confirmFolders = false;
+  await plugin.run(new TFolder('chosen', files));
+  assert.deepEqual(writes, files.map(file => file.path));
+  for (const file of files) assert.equal(contents.get(file.path), '---\nkeep: value\n---\nBody\n');
+  assert.equal(notices[notices.length - 1], 'Property Pruner: removed 45 properties from 3 files.');
+});
+
+test('a rejected or overwritten file write is not counted as a successful removal', async () => {
+  const file = new TFile('a.md');
+  const { plugin, contents } = setup([file]);
+  plugin.app.vault.process = async (_file: TFile, transform: any) => { transform(contents.get(file.path)); };
+  plugin.settings.confirmFiles = false;
+  await plugin.run(file);
+  assert.ok(notices[notices.length - 1].startsWith('Property Pruner: removed 0 properties from 0 files.'));
+  assert.ok(notices[notices.length - 1].includes('unverified removals'));
+  assert.ok(contents.get(file.path)?.includes('remove:'));
+});
+
+test('read-back counts only the removed keys and tolerates other metadata changes', async () => {
+  const file = new TFile('a.md');
+  const { plugin, contents } = setup([file], '---\na:\nb:\nkeep: value\n---\nBody\n');
+  plugin.app.vault.process = async (_file: TFile, transform: any) => {
+    const next = transform(contents.get(file.path));
+    contents.set(file.path, next.replace('keep: value', 'keep: value\na:\nid: generated'));
+  };
+  plugin.settings.confirmFiles = false;
+  await plugin.run(file);
+  assert.ok(notices[notices.length - 1].startsWith('Property Pruner: removed 1 property from 1 file.'));
+  assert.ok(contents.get(file.path)?.includes('id: generated'));
+});
+
+test('active-file command supports Reading view and prunes without accessing its editor', async () => {
+  const file = new TFile('a.md');
+  const { plugin, contents, writes } = setup([file]);
+  const editor = { getValue() { throw new Error('Reading-view editor must not be read'); }, replaceRange() { throw new Error('Reading-view editor must not be edited'); } };
+  const view = new MarkdownView(file, editor, 'preview');
+  plugin.app.workspace.getLeavesOfType = () => [{ view }];
+  await plugin.onload();
+  assert.equal(plugin.commands[0].checkCallback(true), true);
+  plugin.settings.confirmFiles = false;
+  await plugin.run(file);
+  assert.deepEqual(writes, [file.path]);
+  assert.equal(contents.get(file.path), '---\nkeep: value\n---\nBody\n');
+  assert.equal(view.getMode(), 'preview');
+});
+
+test('folder action prunes every Reading-view note and preserves changes since preview', async () => {
+  const files = ['Test 1', 'Test 2', 'Test 3'].map(name => new TFile(`chosen/${name}.md`));
+  const { plugin, contents, writes } = setup(files);
+  const editor = { getValue() { throw new Error('Reading-view editor must not be read'); }, replaceRange() { throw new Error('Reading-view editor must not be edited'); } };
+  const views = files.map(file => new MarkdownView(file, editor, 'preview'));
+  plugin.app.workspace.getLeavesOfType = () => views.map(view => ({ view }));
+  plugin.confirm = async () => {
+    contents.set(files[0].path, '---\nkeep: value\nremove:\nid: generated\n---\nUpdated body\n');
+    return true;
+  };
+  await plugin.run(new TFolder('chosen', files));
+  assert.deepEqual(writes, files.map(file => file.path));
+  assert.equal(contents.get(files[0].path), '---\nkeep: value\nid: generated\n---\nUpdated body\n');
+  assert.ok(views.every(view => view.getMode() === 'preview'));
 });
 
 test('registers active-file command and file/folder context menu action', async () => {
